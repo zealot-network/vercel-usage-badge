@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Vercel Usage Badge",
-  "version": "0.1.0",
-  "description": "Unofficial Vercel usage badge: plan tier, included credit, on-demand budget, and usage meters.",
+  "version": "0.1.1",
+  "description": "Unofficial Vercel usage badge: included credit, on-demand charges, cycle spend, and usage meters.",
   "homepage_url": "https://github.com/zealot-network/vercel-usage-badge",
   "minimum_chrome_version": "111",
   "icons": {

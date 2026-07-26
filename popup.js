@@ -1,12 +1,9 @@
-// popup.js — Reads UsageState from storage and renders the popup UI.
+// popup.js — Reads UsageState from storage and renders the Vercel-styled popup.
 
 const DEFAULT_STATE = {
-  team: {
-    id: null,
-    slug: null,
-    name: null,
-  },
+  team: { id: null, slug: null, name: null },
   meters: [],
+  lineItems: [],
   credit: {
     includedUsd: null,
     usedUsd: null,
@@ -28,6 +25,7 @@ const DEFAULT_STATE = {
     totalEffectiveUsd: null,
     upcomingInvoiceUsd: null,
   },
+  aiGateway: { balanceUsd: null },
   subscriptionTier: null,
   billingCycleStart: null,
   billingCycleEnd: null,
@@ -39,8 +37,13 @@ const DEFAULT_STATE = {
 
 function usageUrl(state) {
   const slug = state?.team?.slug;
+  return slug ? `https://vercel.com/${slug}/~/usage` : "https://vercel.com/dashboard";
+}
+
+function billingUrl(state) {
+  const slug = state?.team?.slug;
   return slug
-    ? `https://vercel.com/${slug}/~/usage`
+    ? `https://vercel.com/${slug}/~/settings/billing`
     : "https://vercel.com/dashboard";
 }
 
@@ -92,6 +95,11 @@ function formatPct(pct) {
   const n = displayPct(pct);
   if (n == null) return "—";
   return `${n}%`;
+}
+
+function formatMoney(n) {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return `$${n.toFixed(2)}`;
 }
 
 function formatResetTime(ts) {
@@ -161,66 +169,33 @@ function formatCompact(n, unit) {
   return String(Math.round(n * 100) / 100);
 }
 
-function buildBarSection({ label, valueText, pct, resetsAt, overLimit }) {
-  const fillPct = pct != null ? Math.min(100, pct) : 0;
-
-  const section = document.createElement("div");
-  section.className = "section";
-  section.innerHTML = `
-    <div class="label-row">
-      <span class="label"></span>
-      <span class="value"></span>
-    </div>
-    <div class="bar-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
-      <div class="bar-fill"></div>
-    </div>
-    <div class="reset-time"></div>
-  `;
-  section.querySelector(".label").textContent = label;
-  const valueEl = section.querySelector(".value");
-  valueEl.textContent = valueText;
-  if (overLimit) valueEl.style.color = "var(--red)";
-
-  const track = section.querySelector(".bar-track");
-  track.setAttribute("aria-label", label);
-  if (pct != null) {
-    track.setAttribute("aria-valuenow", String(Math.round(Math.min(100, pct))));
-    if (overLimit) track.setAttribute("aria-valuetext", valueText + " — over limit");
-  } else {
-    track.setAttribute("aria-valuetext", "No data");
-  }
-
-  const fill = section.querySelector(".bar-fill");
-  fill.style.width = `${fillPct}%`;
-  fill.style.backgroundColor = pct != null ? barColor(pct) : "var(--surface)";
-  section.querySelector(".reset-time").textContent = formatResetTime(resetsAt);
-
-  return section;
-}
-
 function hasUsageData(state) {
   return !!(
     (state.meters && state.meters.length) ||
-    state.credit?.utilization != null ||
-    state.onDemand?.status != null ||
-    state.spend?.infrastructureUsd != null
+    (state.lineItems && state.lineItems.length) ||
+    state.credit?.includedUsd != null ||
+    state.onDemand?.usedUsd != null ||
+    state.spend?.infrastructureUsd != null ||
+    state.aiGateway?.balanceUsd != null
   );
 }
 
 function render(state) {
   const $ = (id) => document.getElementById(id);
 
-  const hasErrorCode = !!state.errorCode;
-  const showPrompt = hasErrorCode && !hasUsageData(state);
-
+  const showPrompt = !!state.errorCode && !hasUsageData(state);
   const promptEl = $("error-prompt");
+  const mainEl = $("main");
+
   if (showPrompt) {
     const copy = ERROR_COPY[state.errorCode] || ERROR_COPY.unknown;
     $("error-prompt-title").textContent = copy.title;
     $("error-prompt-body").innerHTML = copy.body;
     promptEl.style.display = "";
+    mainEl.style.display = "none";
   } else {
     promptEl.style.display = "none";
+    mainEl.style.display = hasUsageData(state) ? "" : "none";
   }
 
   const errorEl = $("error-label");
@@ -231,203 +206,156 @@ function render(state) {
     errorEl.style.display = "none";
   }
 
-  const tierEl = $("tier-pill");
-  const tierLabel = formatTier(state.subscriptionTier);
-  const teamBit = state.team?.slug ? ` · ${state.team.slug}` : "";
-  tierEl.textContent = tierLabel === "—" ? "—" : tierLabel;
-  tierEl.title = state.subscriptionTier
-    ? `Detected Vercel plan${teamBit}`
-    : "Plan not detected yet — open vercel.com/dashboard and refresh";
+  $("tier-pill").textContent = formatTier(state.subscriptionTier);
 
-  const cycleEl = $("cycle-banner");
-  if (state.billingCycleEnd && !showPrompt) {
-    const dateStr = formatCycleDate(state.billingCycleEnd);
-    const countdown = formatResetTime(state.billingCycleEnd);
-    cycleEl.innerHTML = dateStr
-      ? `Limits reset <strong>${dateStr}</strong><span class="countdown">${countdown}</span>`
-      : `<span class="countdown">${countdown}</span>`;
+  // Keep our "Resets in Nd" language (dashboard says "N days remaining in cycle").
+  const cycleEl = $("cycle-label");
+  const cycleSub = $("cycle-sub");
+  if (state.billingCycleEnd) {
+    cycleEl.textContent = formatResetTime(state.billingCycleEnd);
     cycleEl.style.display = "";
+    const dateStr = formatCycleDate(state.billingCycleEnd);
+    if (dateStr) {
+      cycleSub.textContent = `Cycle ends ${dateStr}`;
+      cycleSub.style.display = "";
+    } else {
+      cycleSub.style.display = "none";
+    }
   } else {
     cycleEl.style.display = "none";
+    cycleSub.style.display = "none";
   }
 
-  // Included usage meters
+  // Hero: Included Credit + On-Demand Charges + split bar
+  const credit = state.credit || {};
+  const od = state.onDemand || {};
+  const infra = state.spend?.infrastructureUsd;
+  const included = credit.includedUsd;
+  const creditUsed =
+    credit.usedUsd != null
+      ? credit.usedUsd
+      : infra != null && included != null
+        ? Math.min(infra, included)
+        : null;
+  const onDemandCharges =
+    od.usedUsd != null
+      ? od.usedUsd
+      : infra != null && included != null
+        ? Math.max(0, infra - included)
+        : null;
+
+  if (included != null && creditUsed != null) {
+    $("credit-value").innerHTML =
+      `${formatMoney(creditUsed)} <span class="muted">/ ${formatMoney(included)}</span>`;
+  } else if (included != null) {
+    $("credit-value").textContent = formatMoney(included);
+  } else {
+    $("credit-value").textContent = "—";
+  }
+
+  $("ondemand-value").textContent =
+    onDemandCharges != null ? formatMoney(onDemandCharges) : "—";
+
+  const totalForSplit =
+    (creditUsed || 0) + (onDemandCharges || 0) ||
+    (included != null ? included : 0);
+  let creditPct = 0;
+  let odPct = 0;
+  if (totalForSplit > 0) {
+    creditPct = ((creditUsed || 0) / totalForSplit) * 100;
+    odPct = ((onDemandCharges || 0) / totalForSplit) * 100;
+  } else if (included != null) {
+    creditPct = 100;
+  }
+  $("split-credit").style.width = `${Math.max(0, Math.min(100, creditPct))}%`;
+  $("split-ondemand").style.width = `${Math.max(0, Math.min(100, odPct))}%`;
+
+  const metaParts = [];
+  if (od.status === "on" && od.limitUsd != null) {
+    const budgetPct = od.utilization != null ? ` (${formatPct(od.utilization)})` : "";
+    metaParts.push(
+      `Budget ${formatMoney(onDemandCharges ?? 0)} / ${formatMoney(od.limitUsd)}${budgetPct}`
+    );
+  } else if (od.status === "off") {
+    metaParts.push("No on-demand budget configured");
+  }
+  if (od.overLimit) {
+    metaParts.push(`<span class="warn">Over on-demand budget</span>`);
+  }
+  $("hero-meta").innerHTML = metaParts.join(" · ");
+
+  // AI Gateway prepaid balance
+  const gw = state.aiGateway || {};
+  const gwCard = $("gateway-card");
+  if (gw.balanceUsd != null) {
+    $("gateway-value").textContent = formatMoney(gw.balanceUsd);
+    gwCard.style.display = "";
+  } else {
+    gwCard.style.display = "none";
+  }
+
+  // Cycle spend breakdown
+  const lines = state.lineItems || [];
+  const linesHeading = $("lines-heading");
+  const linesSlot = $("lines-slot");
+  linesSlot.innerHTML = "";
+  if (lines.length > 0 && !showPrompt) {
+    linesHeading.style.display = "";
+    linesSlot.style.display = "";
+    const top = lines.slice(0, 12);
+    for (const row of top) {
+      const el = document.createElement("div");
+      el.className = "line";
+      el.innerHTML = `<span class="line-name"></span><span class="line-amt"></span>`;
+      el.querySelector(".line-name").textContent = row.label;
+      el.querySelector(".line-amt").textContent = formatMoney(row.amountUsd);
+      linesSlot.appendChild(el);
+    }
+  } else {
+    linesHeading.style.display = "none";
+    linesSlot.style.display = "none";
+  }
+
+  // Included usage meters (below credit / on-demand / lines)
   const metersHeading = $("meters-heading");
   const metersSlot = $("meters-slot");
   metersSlot.innerHTML = "";
-  const resetsAt = state.billingCycleEnd;
   const meters = state.meters || [];
-  const creditHorizon = $("credit-horizon");
-
-  if (meters.length > 0) {
+  if (meters.length > 0 && !showPrompt) {
     metersHeading.style.display = "";
-    if (creditHorizon) creditHorizon.style.display = "";
     for (const m of meters) {
       const pct = m.utilization;
       const usedStr = formatCompact(m.used, m.unit);
       const limitStr = formatCompact(m.limit, m.unit);
-      metersSlot.appendChild(
-        buildBarSection({
-          label: m.label || m.key,
-          valueText: `${formatPct(pct)} · ${usedStr} / ${limitStr}`,
-          pct,
-          resetsAt,
-          overLimit: pct != null && pct > 100,
-        })
-      );
+      const wrap = document.createElement("div");
+      wrap.className = "meter";
+      wrap.innerHTML = `
+        <div class="meter-row">
+          <span class="meter-label"></span>
+          <span class="meter-value"></span>
+        </div>
+        <div class="bar-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+          <div class="bar-fill"></div>
+        </div>
+      `;
+      wrap.querySelector(".meter-label").textContent = m.label || m.key;
+      wrap.querySelector(".meter-value").textContent =
+        `${formatPct(pct)} · ${usedStr} / ${limitStr}`;
+      const track = wrap.querySelector(".bar-track");
+      track.setAttribute("aria-label", m.label || m.key);
+      if (pct != null) track.setAttribute("aria-valuenow", String(Math.round(Math.min(100, pct))));
+      const fill = wrap.querySelector(".bar-fill");
+      fill.style.width = `${pct != null ? Math.min(100, pct) : 0}%`;
+      fill.style.backgroundColor = pct != null ? barColor(pct) : "var(--track)";
+      metersSlot.appendChild(wrap);
     }
-  } else if (!showPrompt) {
+  } else {
     metersHeading.style.display = "none";
-    if (creditHorizon) creditHorizon.style.display = "";
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "No included usage meters for this plan yet";
-    metersSlot.appendChild(empty);
-  } else {
-    metersHeading.style.display = "none";
-    if (creditHorizon) creditHorizon.style.display = "none";
-  }
-
-  // Included credit
-  const credit = state.credit || {};
-  const creditSection = $("credit-section");
-  const creditPill = $("credit-pill");
-  const creditDetail = $("credit-detail");
-  const creditBarWrap = $("credit-bar-wrap");
-  const creditBar = $("credit-bar");
-  const creditTrack = $("credit-bar-track");
-  const creditReset = $("credit-reset");
-
-  creditPill.classList.remove("pill-on", "pill-off", "pill-neutral", "pill-paused");
-  if (credit.includedUsd == null) {
-    creditPill.textContent = "—";
-    creditPill.classList.add("pill-neutral");
-    creditDetail.textContent = "Waiting for data…";
-    creditBarWrap.style.display = "none";
-  } else {
-    const exhausted =
-      credit.usedUsd != null &&
-      credit.includedUsd > 0 &&
-      credit.usedUsd >= credit.includedUsd;
-    creditPill.textContent = exhausted ? "EXHAUSTED" : "ACTIVE";
-    creditPill.classList.add(exhausted ? "pill-paused" : "pill-on");
-
-    const uPct = typeof credit.utilization === "number" ? displayPct(credit.utilization) : null;
-    let html = `<strong>$${(credit.usedUsd ?? 0).toFixed(2)}</strong> of $${credit.includedUsd.toFixed(2)}`;
-    if (uPct != null) {
-      html += ` · <span class="${exhausted ? "over" : ""}">${uPct}%</span>`;
-    }
-    if (state.spend?.infrastructureUsd != null) {
-      html += `<div class="extra-sub">Infra $${state.spend.infrastructureUsd.toFixed(2)} this cycle</div>`;
-    }
-    if (exhausted) {
-      html += `<div class="extra-note">Included credit spent — on-demand billing active</div>`;
-    }
-    creditDetail.innerHTML = html;
-
-    if (credit.utilization != null) {
-      creditBar.style.width = `${Math.min(100, credit.utilization)}%`;
-      creditBar.style.backgroundColor = barColor(credit.utilization);
-      if (creditTrack) {
-        creditTrack.setAttribute(
-          "aria-valuenow",
-          String(displayPct(Math.min(100, credit.utilization)) ?? 0)
-        );
-      }
-      creditReset.textContent = formatResetTime(state.billingCycleEnd);
-      creditBarWrap.style.display = "";
-    } else {
-      creditBarWrap.style.display = "none";
-    }
-  }
-
-  // On-demand budget
-  const od = state.onDemand || {};
-  let status = od.status;
-  if (status == null) {
-    if (od.enabled === true) status = "on";
-    else if (od.enabled === false) status = "off";
-  }
-  const known = status != null;
-  const active = status === "on";
-  const overLimit = od.overLimit === true;
-
-  const section = $("ondemand-section");
-  section.classList.toggle("over-limit", overLimit);
-
-  const enabledPill = $("ondemand-enabled-pill");
-  enabledPill.classList.remove("pill-on", "pill-off", "pill-neutral", "pill-paused");
-  if (!known) {
-    enabledPill.textContent = "—";
-    enabledPill.classList.add("pill-neutral");
-  } else if (status === "on") {
-    if (overLimit) {
-      enabledPill.textContent = "OVER LIMIT";
-      enabledPill.classList.add("pill-paused");
-    } else {
-      enabledPill.textContent = "ON";
-      enabledPill.classList.add("pill-on");
-    }
-  } else {
-    enabledPill.textContent = "OFF";
-    enabledPill.classList.add("pill-off");
-  }
-
-  const detailEl = $("ondemand-detail");
-  const barWrap = $("ondemand-bar-wrap");
-  const odBar = $("ondemand-bar");
-  const odBarTrack = $("ondemand-bar-track");
-  const odResetEl = $("ondemand-reset");
-
-  if (!known) {
-    detailEl.textContent = "Waiting for data…";
-    barWrap.style.display = "none";
-  } else if (!active) {
-    detailEl.textContent = "No on-demand budget configured";
-    barWrap.style.display = "none";
-  } else {
-    const uPct = typeof od.utilization === "number" ? displayPct(od.utilization) : null;
-    let html = "";
-    if (od.usedUsd != null && od.limitUsd != null && od.limitUsd > 0) {
-      const pctTag =
-        uPct != null
-          ? ` · <span class="${overLimit ? "over" : ""}">${uPct}%</span>`
-          : "";
-      html = `<strong>$${od.usedUsd.toFixed(2)}</strong> of $${od.limitUsd.toFixed(2)}${pctTag}`;
-    } else if (od.usedUsd != null) {
-      html = `<strong>$${od.usedUsd.toFixed(2)}</strong> on-demand (no cap)`;
-    } else {
-      html = "Enabled — no spend data yet";
-    }
-    if (od.remainingUsd != null && od.limitUsd != null) {
-      html += `<div class="extra-sub">$${od.remainingUsd.toFixed(2)} remaining</div>`;
-    }
-    if (state.spend?.upcomingInvoiceUsd != null) {
-      html += `<div class="extra-sub">Upcoming ≈ $${state.spend.upcomingInvoiceUsd.toFixed(2)}</div>`;
-    }
-    if (overLimit) {
-      html += `<div class="extra-note">Over your on-demand monthly budget</div>`;
-    }
-    detailEl.innerHTML = html;
-
-    let pct = null;
-    if (typeof od.utilization === "number") pct = od.utilization;
-    else if (od.limitUsd != null && od.limitUsd > 0 && od.usedUsd != null) {
-      pct = (od.usedUsd / od.limitUsd) * 100;
-    }
-    if (pct != null) {
-      odBar.style.width = `${Math.min(100, pct)}%`;
-      odBar.style.backgroundColor = barColor(pct);
-      if (odBarTrack) {
-        odBarTrack.setAttribute("aria-valuenow", String(displayPct(Math.min(100, pct)) ?? 0));
-        if (overLimit) {
-          odBarTrack.setAttribute("aria-valuetext", `${displayPct(pct)}% — over limit`);
-        }
-      }
-      odResetEl.textContent = formatResetTime(state.billingCycleEnd);
-      barWrap.style.display = "";
-    } else {
-      barWrap.style.display = "none";
+    if (!showPrompt && hasUsageData(state) && lines.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No included usage meters for this plan";
+      metersSlot.appendChild(empty);
     }
   }
 
@@ -442,7 +370,9 @@ function normalizeState(state) {
     credit: { ...DEFAULT_STATE.credit, ...((state && state.credit) || {}) },
     onDemand: { ...DEFAULT_STATE.onDemand, ...((state && state.onDemand) || {}) },
     spend: { ...DEFAULT_STATE.spend, ...((state && state.spend) || {}) },
+    aiGateway: { ...DEFAULT_STATE.aiGateway, ...((state && state.aiGateway) || {}) },
     meters: (state && state.meters) || [],
+    lineItems: (state && state.lineItems) || [],
   };
 }
 
@@ -466,6 +396,15 @@ async function loadAndRender() {
   }
 }
 
+async function currentState() {
+  try {
+    const { usageState } = await chrome.storage.local.get("usageState");
+    return normalizeState(usageState);
+  } catch {
+    return DEFAULT_STATE;
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   loadAndRender();
 
@@ -480,8 +419,6 @@ document.addEventListener("DOMContentLoaded", () => {
   btn.addEventListener("click", () => {
     btn.textContent = "…";
     btn.disabled = true;
-    btn.setAttribute("aria-busy", "true");
-
     let finished = false;
     const done = () => {
       if (finished) return;
@@ -489,7 +426,6 @@ document.addEventListener("DOMContentLoaded", () => {
       loadAndRender();
       btn.textContent = "Refresh";
       btn.disabled = false;
-      btn.removeAttribute("aria-busy");
     };
     const safety = setTimeout(done, 30_000);
     chrome.runtime.sendMessage({ type: "FORCE_REFRESH" }, () => {
@@ -500,16 +436,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("open-usage-btn").addEventListener("click", async () => {
-    let state = DEFAULT_STATE;
-    try {
-      state = await new Promise((resolve) => {
-        chrome.storage.local.get("usageState", ({ usageState }) => {
-          resolve(usageState || DEFAULT_STATE);
-        });
-      });
-    } catch {
-      // fall through
-    }
-    chrome.tabs.create({ url: usageUrl(state) });
+    chrome.tabs.create({ url: usageUrl(await currentState()) });
+  });
+
+  document.getElementById("billing-btn").addEventListener("click", async () => {
+    chrome.tabs.create({ url: billingUrl(await currentState()) });
   });
 });

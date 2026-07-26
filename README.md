@@ -4,19 +4,24 @@ A Chrome extension that puts your Vercel usage in your browser toolbar.
 
 > **Unofficial.** This is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Vercel Inc. "Vercel" is a trademark of Vercel Inc., used here only to describe what the extension does.
 
-The badge shows the worst of your meaningful usage signals at a glance — included usage meters, included credit burn, and on-demand budget. Click it for the full breakdown: plan tier, billing-cycle reset countdown, meter bars, credit, and spend management.
+The badge shows the worst of your meaningful usage signals at a glance — included credit burn, on-demand charges/budget, and included usage meters. Click it for a Vercel-styled breakdown that mirrors the dashboard usage card.
 
 ## Features
 
+**Included credit & on-demand**
+- Dashboard-style split bar: Included Credit vs On-Demand Charges
+- On-demand budget vs charges when Spend Management is configured
+- Over-budget state is flagged
+
+**This cycle**
+- Line-item spend list (Build CPU Minutes, Observability, Fluid, …)
+
 **Included usage**
-- Edge Requests vs included allotment (when your plan exposes a threshold)
-- Fast Data Transfer vs included allotment
+- Edge Requests and Fast Data Transfer vs plan allotments (when exposed)
 - Badge color escalates on the worst signal
 
-**Included credit & on-demand**
-- Pro included credit burn (`$ used / $ included`)
-- On-demand budget status with spend vs limit
-- Over-limit state is flagged loudly (red)
+**AI Gateway**
+- Prepaid AI Gateway credit balance (when available)
 
 **Subscription tier**
 - Plan pill: Hobby, Pro, Enterprise
@@ -62,16 +67,19 @@ Auth uses your existing `_v-session` cookie on `vercel.com`. No token pasting re
 
 ## Design
 
-Popup UI follows [Vercel](https://vercel.com) brand standards from the All Brand Standards DB:
+Popup UI follows [Vercel](https://vercel.com) brand standards from the All Brand Standards DB and the live dashboard usage card:
 
 | Token | Hex | Use |
 |---|---|---|
-| Background | `#000000` / `#0A0A0A` | Page / cards |
-| Triangle mark | `#FFFFFF` | Toolbar icon triangle |
-| Accent | `#0070F3` | Icon ring, titles, CTAs (Vercel blue) |
-| Severity | `#15803D` / `#B45309` / `#B91C1C` | Live `%` badge overlay (Claude Usage Badge scheme) |
+| Background | `#FFFFFF` / `#FAFAFA` | Popup / surfaces |
+| Text | `#000000` / `#666666` | Primary / secondary |
+| Borders | `#E5E5E5` | Cards, rows |
+| Accent | `#0070F3` | Included credit segment, CTAs |
+| On-demand | `#8B5CF6` | On-demand charges segment (dashboard card) |
+| Toolbar icon | `#000000` / `#FFFFFF` / `#0070F3` | Disc, triangle, ring |
+| Severity | `#15803D` / `#B45309` / `#B91C1C` | Live `%` badge overlay |
 
-Typography: Inter + JetBrains Mono. Store listing assets live in `../store-assets/`.
+Typography: Inter. Store listing assets live in `../store-assets/`.
 
 ## Development
 

@@ -19,17 +19,18 @@ const DEFAULT_STATE = {
     name: null,
   },
   meters: [], // [{ key, label, used, limit, unit, utilization }]
+  lineItems: [], // [{ label, amountUsd }] — cycle spend breakdown
   credit: {
     includedUsd: null,
-    usedUsd: null,
+    usedUsd: null, // amount of included credit consumed (capped at included)
     remainingUsd: null,
-    utilization: null,
+    utilization: null, // infra / included (may exceed 100)
   },
   onDemand: {
     enabled: null,
-    status: null, // "on" | "off" | null
-    usedUsd: null,
-    limitUsd: null,
+    status: null, // "on" | "off" | null — budget configured
+    usedUsd: null, // on-demand charges this cycle (infra beyond credit)
+    limitUsd: null, // spend-management budget, if any
     remainingUsd: null,
     utilization: null,
     overLimit: null,
@@ -39,6 +40,9 @@ const DEFAULT_STATE = {
     seatsUsd: null,
     totalEffectiveUsd: null,
     upcomingInvoiceUsd: null,
+  },
+  aiGateway: {
+    balanceUsd: null,
   },
   subscriptionTier: null,
   billingCycleStart: null,
@@ -309,7 +313,13 @@ function mergeState(partial) {
           ...(prev.spend || {}),
           ...(partial.spend || {}),
         },
+        aiGateway: {
+          ...DEFAULT_STATE.aiGateway,
+          ...(prev.aiGateway || {}),
+          ...(partial.aiGateway || {}),
+        },
         meters: partial.meters != null ? partial.meters : prev.meters || [],
+        lineItems: partial.lineItems != null ? partial.lineItems : prev.lineItems || [],
       };
       await chrome.storage.local.set({ usageState: next });
       await refreshBadge();
@@ -471,11 +481,18 @@ async function fetchSpendFromCharges(teamId, fromIso, toIso) {
     }
   }
 
+  const lineItems = Object.entries(byService)
+    .filter(([name]) => !/^(Pro|Hobby)$/i.test(name) && !/seat|license/i.test(name))
+    .map(([label, amountUsd]) => ({ label, amountUsd }))
+    .filter((row) => row.amountUsd > 0.004)
+    .sort((a, b) => b.amountUsd - a.amountUsd);
+
   const value = {
     totalEffectiveUsd: totalEffective,
     seatsUsd,
     infrastructureUsd,
     byService,
+    lineItems,
   };
   await patchThrottle({
     spendCache: { teamId, fromIso, at: Date.now(), value },
@@ -491,6 +508,20 @@ async function fetchBudgets(teamId) {
     return active;
   } catch (e) {
     dbg("budgets failed:", e);
+    return null;
+  }
+}
+
+async function fetchAiGatewayBalance(teamId) {
+  try {
+    const data = await apiGet(
+      `/ai/ai-credits-balance?teamId=${encodeURIComponent(teamId)}`
+    );
+    const raw = data?.cumulativeBalance;
+    const n = typeof raw === "string" ? Number(raw) : numOrNull(raw);
+    return Number.isFinite(n) ? n : null;
+  } catch (e) {
+    dbg("ai gateway balance failed:", e);
     return null;
   }
 }
@@ -616,7 +647,7 @@ async function doFetchUsage(force = false) {
 
     const includedUsd = numOrNull(billing.invoiceItems?.includedAllocationUsd?.quantity);
 
-    const [requestTotals, budget, spend] = await Promise.all([
+    const [requestTotals, budget, spend, aiBalance] = await Promise.all([
       fetchUsageTotals(team.id, fromIso, toIso, "requests").catch((e) => {
         dbg("usage requests failed:", e);
         return {};
@@ -626,6 +657,7 @@ async function doFetchUsage(force = false) {
         dbg("charges failed:", e);
         return null;
       }),
+      fetchAiGatewayBalance(team.id),
     ]);
 
     const meters = buildMeters(billing.invoiceItems || {}, requestTotals);
@@ -659,6 +691,7 @@ async function doFetchUsage(force = false) {
         name: team.name || null,
       },
       meters,
+      lineItems: spend?.lineItems || [],
       credit: {
         includedUsd,
         usedUsd: creditUsed,
@@ -685,6 +718,9 @@ async function doFetchUsage(force = false) {
         seatsUsd: numOrNull(spend?.seatsUsd),
         totalEffectiveUsd: numOrNull(spend?.totalEffectiveUsd),
         upcomingInvoiceUsd: upcoming,
+      },
+      aiGateway: {
+        balanceUsd: aiBalance,
       },
       subscriptionTier: normalizeTier(billing.plan),
       billingCycleStart: periodStart,
@@ -746,7 +782,12 @@ chrome.runtime.onInstalled.addListener(async (details) => {
           ...DEFAULT_STATE.spend,
           ...((usageState && usageState.spend) || {}),
         },
+        aiGateway: {
+          ...DEFAULT_STATE.aiGateway,
+          ...((usageState && usageState.aiGateway) || {}),
+        },
         meters: (usageState && usageState.meters) || [],
+        lineItems: (usageState && usageState.lineItems) || [],
       },
     });
   }
