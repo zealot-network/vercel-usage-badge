@@ -525,7 +525,7 @@ async function fetchUsageTotals(teamId, fromIso, toIso, type) {
 // ─── Charges (FOCUS JSONL) ──────────────────────────────────────────────────
 
 const CHARGES_CACHE_KEY = "chargesCache";
-const CHARGES_CACHE_VERSION = 1;
+const CHARGES_CACHE_VERSION = 2;
 const CHARGES_FULL_REBUILD_MS = 6 * 60 * 60_000;
 const DAY_MS = 86400000;
 
@@ -607,44 +607,42 @@ async function fetchChargesWindow(teamId, fromIso, toIso) {
 }
 
 /**
- * Service totals for the settled part of the cycle, [from, closedTo).
- * A busy team produces several MB of charge rows per cycle, so settled days
- * are kept in storage and only newly settled days are fetched. The whole
- * range is rebuilt every few hours (and on manual refresh) to pick up any
- * late adjustments.
+ * Service totals for the two slow-moving parts of the cycle:
+ *   settled  [from, closedTo)   days that ended more than 24h ago
+ *   future   [nearEnd, to)      days that have not started yet
+ * Vercel returns charge rows for every day of the cycle, including future
+ * ones (zero-usage rows plus the pre-billed plan fee and seats), so a busy
+ * team's cycle is tens of MB. Both parts are kept in storage and rebuilt only
+ * every few hours, when the day changes, or on manual refresh. Everything in
+ * between is the small "open" window the caller fetches on each refresh.
  */
-async function loadClosedCharges(teamId, fromIso, fromMs, closedToMs) {
+async function loadCycleCache(teamId, fromIso, toIso, closedToMs, nearEndMs) {
   let cache = null;
   try {
     cache = (await chrome.storage.local.get(CHARGES_CACHE_KEY))[CHARGES_CACHE_KEY] || null;
   } catch {
     cache = null;
   }
-  const usable =
+  if (
     cache &&
     cache.v === CHARGES_CACHE_VERSION &&
     cache.teamId === teamId &&
     cache.fromIso === fromIso &&
-    cache.closedToMs > fromMs &&
-    cache.closedToMs <= closedToMs &&
-    Date.now() - (cache.builtAt || 0) < CHARGES_FULL_REBUILD_MS;
-
-  let services;
-  let builtAt;
-  if (usable) {
-    services = cache.services || {};
-    builtAt = cache.builtAt;
-    if (cache.closedToMs === closedToMs) return services;
-    const delta = await fetchChargesWindow(
-      teamId,
-      new Date(cache.closedToMs).toISOString(),
-      new Date(closedToMs).toISOString()
-    );
-    services = mergeCharges(services, delta);
-  } else {
-    services = await fetchChargesWindow(teamId, fromIso, new Date(closedToMs).toISOString());
-    builtAt = Date.now();
+    cache.toIso === toIso &&
+    cache.closedToMs === closedToMs &&
+    cache.nearEndMs === nearEndMs &&
+    Date.now() - (cache.builtAt || 0) < CHARGES_FULL_REBUILD_MS
+  ) {
+    return { settled: cache.settled || {}, future: cache.future || {} };
   }
+
+  const fromMs = new Date(fromIso).getTime();
+  const toMs = new Date(toIso).getTime();
+  const iso = (ms) => new Date(ms).toISOString();
+  const [settled, future] = await Promise.all([
+    closedToMs > fromMs ? fetchChargesWindow(teamId, fromIso, iso(closedToMs)) : {},
+    nearEndMs < toMs ? fetchChargesWindow(teamId, iso(nearEndMs), toIso) : {},
+  ]);
 
   try {
     await chrome.storage.local.set({
@@ -652,15 +650,18 @@ async function loadClosedCharges(teamId, fromIso, fromMs, closedToMs) {
         v: CHARGES_CACHE_VERSION,
         teamId,
         fromIso,
+        toIso,
         closedToMs,
-        builtAt,
-        services,
+        nearEndMs,
+        builtAt: Date.now(),
+        settled,
+        future,
       },
     });
   } catch {
     // best-effort
   }
-  return services;
+  return { settled, future };
 }
 
 async function fetchSpendFromCharges(teamId, fromIso, toIso) {
@@ -677,23 +678,28 @@ async function fetchSpendFromCharges(teamId, fromIso, toIso) {
 
   const fromMs = new Date(fromIso).getTime();
   const toMs = new Date(toIso).getTime();
-  // Days that ended more than 24h ago are treated as settled.
-  let closedToMs = Math.floor((Date.now() - DAY_MS) / DAY_MS) * DAY_MS;
-  if (Number.isFinite(toMs)) closedToMs = Math.min(closedToMs, toMs);
-
-  let closed = {};
-  let openFromIso = fromIso;
-  if (Number.isFinite(fromMs) && closedToMs > fromMs) {
-    closed = await loadClosedCharges(teamId, fromIso, fromMs, closedToMs);
-    openFromIso = new Date(closedToMs).toISOString();
+  let services;
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) {
+    services = await fetchChargesWindow(teamId, fromIso, toIso);
+  } else {
+    const today = Math.floor(Date.now() / DAY_MS) * DAY_MS;
+    // Open window: yesterday through the end of tomorrow (UTC), clamped to the cycle.
+    const closedToMs = Math.min(Math.max(today - DAY_MS, fromMs), toMs);
+    const nearEndMs = Math.max(Math.min(today + 2 * DAY_MS, toMs), closedToMs);
+    const [{ settled, future }, open] = await Promise.all([
+      loadCycleCache(teamId, fromIso, toIso, closedToMs, nearEndMs),
+      nearEndMs > closedToMs
+        ? fetchChargesWindow(
+            teamId,
+            new Date(closedToMs).toISOString(),
+            new Date(nearEndMs).toISOString()
+          )
+        : {},
+    ]);
+    services = mergeCharges(mergeCharges(settled, future), open);
   }
 
-  let open = {};
-  if (!Number.isFinite(toMs) || new Date(openFromIso).getTime() < toMs) {
-    open = await fetchChargesWindow(teamId, openFromIso, toIso);
-  }
-
-  const value = summarizeCharges(mergeCharges(closed, open));
+  const value = summarizeCharges(services);
   await patchThrottle({
     spendCache: { teamId, fromIso, at: Date.now(), value },
   });

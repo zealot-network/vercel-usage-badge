@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vercel Usage Tracker & Badge",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Unofficial Vercel usage tracker and toolbar badge: included credit, on-demand charges, cycle spend, and CDN usage.",
   "homepage_url": "https://github.com/zealot-network/vercel-usage-badge",
   "minimum_chrome_version": "111",

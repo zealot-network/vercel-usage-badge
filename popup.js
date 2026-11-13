@@ -104,7 +104,8 @@ function formatPct(pct) {
 
 function formatMoney(n) {
   if (n == null || !Number.isFinite(n)) return "—";
-  return `$${n.toFixed(2)}`;
+  if (Math.abs(n) < 0.005) return "$0.00"; // never "$-0.00"
+  return n < 0 ? `-$${Math.abs(n).toFixed(2)}` : `$${n.toFixed(2)}`;
 }
 
 function formatResetTime(ts) {

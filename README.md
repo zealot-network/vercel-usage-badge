@@ -54,7 +54,7 @@ Primary endpoints (cookie session on `vercel.com`):
 - `GET /api/teams` — plan, billing period, included thresholds
 - `GET /api/v1/budgets` — on-demand spend management
 - `GET /api/v2/usage?type=requests` — included meter totals
-- `GET /api/v1/billing/charges` — FOCUS JSONL spend totals (summary cached 15 minutes; settled days cached locally and only new days fetched)
+- `GET /api/v1/billing/charges` — FOCUS JSONL spend totals (summary cached 15 minutes; settled and future days of the cycle cached locally, so a normal refresh fetches only about three days)
 
 Auth uses your existing `_v-session` cookie on `vercel.com`. No token pasting required — just stay signed in to the dashboard in Chrome.
 
