@@ -1,8 +1,8 @@
-# Privacy Policy — Vercel Usage Badge
+# Privacy Policy — Vercel Usage Tracker & Badge
 
 **Last updated:** July 26, 2026
 
-Vercel Usage Badge (“the extension”) is an unofficial, independent open-source Chrome extension. It is not affiliated with, endorsed by, or sponsored by Vercel Inc.
+Vercel Usage Tracker & Badge (“the extension”) is an unofficial, independent open-source Chrome extension. It is not affiliated with, endorsed by, or sponsored by Vercel Inc.
 
 ## What the extension does
 

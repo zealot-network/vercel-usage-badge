@@ -10,7 +10,7 @@
 //   GET /api/v1/billing/charges (JSONL, cached — spend totals)
 
 const DEBUG = false;
-const dbg = (...args) => { if (DEBUG) console.log("[Vercel Usage Badge]", ...args); };
+const dbg = (...args) => { if (DEBUG) console.log("[Vercel Usage Tracker & Badge]", ...args); };
 
 const DEFAULT_STATE = {
   team: {
@@ -99,6 +99,7 @@ const COLOR_GREEN = "#15803D";
 const COLOR_AMBER = "#B45309";
 const COLOR_RED = "#B91C1C";
 const COLOR_GREY = "#3F3F46";
+const COLOR_PURPLE = "#8B5CF6";
 const BADGE_TEXT = "#FFFFFF";
 
 // Icon brand accents — Vercel blue ring + black/white triangle system.
@@ -107,65 +108,143 @@ const ICON_MARK = "#FFFFFF";
 const ICON_BG = "#000000";
 const ICON_TRACK = "#2A2A2A";
 
+function hexToRgb(hex) {
+  const h = String(hex || "").replace("#", "");
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
+
+function rgbToHex({ r, g, b }) {
+  return (
+    "#" +
+    [r, g, b]
+      .map((n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+
+/** Blend two hex colors; t=0 → a, t=1 → b. */
+function blendHex(a, b, t) {
+  const u = Math.max(0, Math.min(1, t));
+  const A = hexToRgb(a);
+  const B = hexToRgb(b);
+  return rgbToHex({
+    r: Math.round(A.r + (B.r - A.r) * u),
+    g: Math.round(A.g + (B.g - A.g) * u),
+    b: Math.round(A.b + (B.b - A.b) * u),
+  });
+}
+
+function trafficLightColor(util) {
+  if (util >= 90) return COLOR_RED;
+  if (util >= 70) return COLOR_AMBER;
+  return COLOR_GREEN;
+}
+
+/** On-demand budget fill: Vercel blue → violet as budget burns. Over budget → red. */
+function onDemandColor(util, overLimit) {
+  if (overLimit) return COLOR_RED;
+  const t = Math.max(0, Math.min(1, (util ?? 0) / 100));
+  return blendHex(ICON_BLUE, COLOR_PURPLE, t);
+}
+
 function computeBadge(state) {
-  const candidates = [];
-  for (const m of state.meters || []) {
-    if (m?.utilization != null) candidates.push(m.utilization);
-  }
-  if (state.credit?.utilization != null) candidates.push(state.credit.utilization);
-  if (state.onDemand?.utilization != null) candidates.push(state.onDemand.utilization);
-
   const onDemand = state.onDemand || {};
+  const credit = state.credit || {};
+  const inOnDemand = onDemand.usedUsd != null && onDemand.usedUsd > 0;
 
-  if (candidates.length === 0) {
+  // Hobby meters are hard limits (usage pauses when they run out). On paid
+  // plans they are Flat Rate CDN capacity: going over costs nothing this cycle
+  // and only moves the team up a tier next cycle, so they must not turn the
+  // badge red. They still show in the popup and tooltip.
+  const metersAreLimits = state.subscriptionTier === "hobby";
+  const meterUtils = [];
+  for (const m of state.meters || []) {
+    if (metersAreLimits && m?.utilization != null) meterUtils.push(m.utilization);
+  }
+
+  let text = "";
+  let color = COLOR_GREY;
+  let fillPct = 0;
+  let ringColor = ICON_BLUE;
+  let hasSignal = false;
+
+  if (inOnDemand) {
+    // Past included credit: badge tracks on-demand budget burn (not 200%+ credit util).
+    hasSignal = true;
+    if (onDemand.utilization != null) {
+      const pct = displayPct(onDemand.utilization);
+      text = `${pct}%`;
+      fillPct = Math.max(0, Math.min(100, onDemand.utilization));
+      color = onDemandColor(onDemand.utilization, onDemand.overLimit);
+      ringColor = color;
+    } else {
+      // On-demand charges with no Spend Management budget configured.
+      text = "OD";
+      fillPct = 100;
+      color = COLOR_PURPLE;
+      ringColor = COLOR_PURPLE;
+    }
+  } else {
+    // Within included credit: traffic-light on credit burn (and included meters).
+    const candidates = [];
+    if (credit.utilization != null) candidates.push(credit.utilization);
+    candidates.push(...meterUtils);
+
+    if (candidates.length > 0) {
+      hasSignal = true;
+      const worst = Math.max(...candidates);
+      const pct = displayPct(worst);
+      text = `${pct}%`;
+      fillPct = Math.max(0, Math.min(100, worst));
+      color = trafficLightColor(worst);
+      ringColor = ICON_BLUE;
+    }
+  }
+
+  if (!hasSignal) {
     if (state.lastError) {
       return {
         text: "!",
         color: COLOR_GREY,
-        title: `Vercel Usage Badge — ${state.lastError}`,
+        title: `Vercel Usage Tracker & Badge — ${state.lastError}`,
         fillPct: 0,
+        ringColor: ICON_BLUE,
       };
     }
     return {
       text: "",
       color: COLOR_GREY,
-      title: "Vercel Usage Badge — no data yet",
+      title: "Vercel Usage Tracker & Badge — no data yet",
       fillPct: 0,
+      ringColor: ICON_BLUE,
     };
   }
-
-  const worst = Math.max(...candidates);
-  const pct = displayPct(worst);
-  const text = `${pct}%`;
-
-  let color;
-  if (onDemand.overLimit) color = COLOR_RED;
-  else if (worst >= 90) color = COLOR_RED;
-  else if (worst >= 70) color = COLOR_AMBER;
-  else color = COLOR_GREEN;
 
   const parts = [];
   if (state.subscriptionTier) parts.push(`Plan: ${state.subscriptionTier}`);
   if (state.team?.slug) parts.push(state.team.slug);
-  for (const m of state.meters || []) {
-    if (m?.utilization != null) {
-      parts.push(`${m.label}: ${displayPct(m.utilization)}%`);
-    }
-  }
-  if (state.credit?.includedUsd != null && state.credit?.usedUsd != null) {
-    parts.push(
-      `Credit: $${state.credit.usedUsd.toFixed(2)} / $${state.credit.includedUsd.toFixed(2)}`
-    );
-  }
-  if (onDemand.status === "on") {
-    const label = onDemand.overLimit ? "On-demand budget: OVER" : "On-demand budget";
+  if (inOnDemand) {
+    parts.push("On-demand");
     if (onDemand.usedUsd != null && onDemand.limitUsd != null) {
+      const label = onDemand.overLimit ? "Budget: OVER" : "Budget";
       parts.push(
         `${label}: $${onDemand.usedUsd.toFixed(2)} / $${onDemand.limitUsd.toFixed(2)}` +
           (onDemand.utilization != null ? ` (${displayPct(onDemand.utilization)}%)` : "")
       );
-    } else {
-      parts.push(label);
+    } else if (onDemand.usedUsd != null) {
+      parts.push(`On-demand charges: $${onDemand.usedUsd.toFixed(2)}`);
+    }
+  }
+  if (credit.includedUsd != null && credit.usedUsd != null) {
+    parts.push(`Credit: $${credit.usedUsd.toFixed(2)} / $${credit.includedUsd.toFixed(2)}`);
+  }
+  for (const m of state.meters || []) {
+    if (m?.utilization != null) {
+      parts.push(`${m.label}: ${displayPct(m.utilization)}%`);
     }
   }
   if (state.billingCycleEnd) {
@@ -187,7 +266,8 @@ function computeBadge(state) {
     text,
     color,
     title: parts.join(" · "),
-    fillPct: Math.max(0, Math.min(100, worst)),
+    fillPct,
+    ringColor,
   };
 }
 
@@ -203,7 +283,7 @@ function paintTriangle(ctx, cx, cy, r) {
   ctx.closePath();
 }
 
-function paintIcon(ctx, size, fillPct) {
+function paintIcon(ctx, size, fillPct, ringColor) {
   const cx = size / 2;
   const cy = size / 2;
   ctx.clearRect(0, 0, size, size);
@@ -229,7 +309,7 @@ function paintIcon(ctx, size, fillPct) {
     const sweep = Math.max((pct / 100) * Math.PI * 2, 0.14);
     ctx.beginPath();
     ctx.arc(cx, cy, ringR, start, start + sweep);
-    ctx.strokeStyle = ICON_BLUE;
+    ctx.strokeStyle = ringColor || ICON_BLUE;
     ctx.lineWidth = ringW;
     ctx.lineCap = "round";
     ctx.stroke();
@@ -240,14 +320,14 @@ function paintIcon(ctx, size, fillPct) {
   ctx.fill();
 }
 
-function drawIconBitmap(size, fillPct) {
+function drawIconBitmap(size, fillPct, ringColor) {
   const scale = 4;
   const big = size * scale;
   const hi = new OffscreenCanvas(big, big);
   const hctx = hi.getContext("2d");
   hctx.imageSmoothingEnabled = true;
   hctx.imageSmoothingQuality = "high";
-  paintIcon(hctx, big, fillPct);
+  paintIcon(hctx, big, fillPct, ringColor);
 
   const lo = new OffscreenCanvas(size, size);
   const lctx = lo.getContext("2d");
@@ -258,11 +338,11 @@ function drawIconBitmap(size, fillPct) {
   return lctx.getImageData(0, 0, size, size);
 }
 
-async function setProgressIcon(fillPct) {
+async function setProgressIcon(fillPct, ringColor) {
   try {
     const images = {
-      16: drawIconBitmap(16, fillPct),
-      32: drawIconBitmap(32, fillPct),
+      16: drawIconBitmap(16, fillPct, ringColor),
+      32: drawIconBitmap(32, fillPct, ringColor),
     };
     await chrome.action.setIcon({ imageData: images });
   } catch (e) {
@@ -273,7 +353,7 @@ async function setProgressIcon(fillPct) {
 async function refreshBadge() {
   const { usageState } = await chrome.storage.local.get("usageState");
   const state = usageState || DEFAULT_STATE;
-  const { text, color, title, fillPct } = computeBadge(state);
+  const { text, color, title, fillPct, ringColor } = computeBadge(state);
   await chrome.action.setBadgeText({ text });
   await chrome.action.setBadgeBackgroundColor({ color });
   try {
@@ -282,7 +362,7 @@ async function refreshBadge() {
     // Older Chrome — auto text color is the graceful fallback.
   }
   await chrome.action.setTitle({ title });
-  await setProgressIcon(fillPct ?? 0);
+  await setProgressIcon(fillPct ?? 0, ringColor || ICON_BLUE);
 }
 
 // ─── State writes (serialized) ──────────────────────────────────────────────
@@ -442,25 +522,25 @@ async function fetchUsageTotals(teamId, fromIso, toIso, type) {
   return sumUsageFields(data?.data || []);
 }
 
-async function fetchSpendFromCharges(teamId, fromIso, toIso) {
-  // 15-minute cache — the JSONL payload can be large.
-  const throttle = await getThrottle();
-  if (
-    throttle.spendCache &&
-    throttle.spendCache.teamId === teamId &&
-    throttle.spendCache.fromIso === fromIso &&
-    Date.now() - (throttle.spendCache.at || 0) < 15 * 60_000
-  ) {
-    return throttle.spendCache.value;
-  }
+// ─── Charges (FOCUS JSONL) ──────────────────────────────────────────────────
 
-  const q = new URLSearchParams({ teamId, from: fromIso, to: toIso });
-  const text = await apiGetText(`/v1/billing/charges?${q}`);
-  let totalEffective = 0;
-  let seatsUsd = 0;
-  let infrastructureUsd = 0;
-  const byService = {};
+const CHARGES_CACHE_KEY = "chargesCache";
+const CHARGES_CACHE_VERSION = 1;
+const CHARGES_FULL_REBUILD_MS = 6 * 60 * 60_000;
+const DAY_MS = 86400000;
 
+/**
+ * Seats, the plan platform fee, and paid add-ons (Observability Plus, SAML, …)
+ * are billed monthly. They never draw down the included credit and are not
+ * part of the on-demand budget, so they must stay out of infrastructure spend.
+ */
+function isSubscriptionCharge(name, category) {
+  if (/subscription|license/i.test(category || "")) return true;
+  return /^(Pro|Hobby|Enterprise)$/i.test(name || "") || /seat|license/i.test(name || "");
+}
+
+/** Add one JSONL payload into a { service: { cost, category } } map. */
+function accumulateCharges(text, into) {
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     let c;
@@ -471,41 +551,186 @@ async function fetchSpendFromCharges(teamId, fromIso, toIso) {
     }
     const cost = Number(c.EffectiveCost || 0);
     if (!Number.isFinite(cost)) continue;
-    totalEffective += cost;
     const service = c.ServiceName || "Unknown";
-    byService[service] = (byService[service] || 0) + cost;
-    if (service === "Pro" || service === "Hobby" || /seat|license/i.test(service)) {
+    const row = into[service] || (into[service] = { cost: 0, category: null });
+    row.cost += cost;
+    if (!row.category && c.ServiceCategory) row.category = c.ServiceCategory;
+  }
+  return into;
+}
+
+function mergeCharges(a, b) {
+  const out = {};
+  for (const src of [a, b]) {
+    for (const [name, row] of Object.entries(src || {})) {
+      const dst = out[name] || (out[name] = { cost: 0, category: null });
+      dst.cost += Number(row?.cost) || 0;
+      if (!dst.category && row?.category) dst.category = row.category;
+    }
+  }
+  return out;
+}
+
+function summarizeCharges(services) {
+  let totalEffective = 0;
+  let seatsUsd = 0;
+  let infrastructureUsd = 0;
+  const byService = {};
+  const lineItems = [];
+
+  for (const [name, row] of Object.entries(services)) {
+    const cost = Number(row.cost) || 0;
+    totalEffective += cost;
+    byService[name] = cost;
+    if (isSubscriptionCharge(name, row.category)) {
       seatsUsd += cost;
     } else {
       infrastructureUsd += cost;
+      if (cost > 0.004) lineItems.push({ label: name, amountUsd: cost });
     }
   }
+  lineItems.sort((a, b) => b.amountUsd - a.amountUsd);
 
-  const lineItems = Object.entries(byService)
-    .filter(([name]) => !/^(Pro|Hobby)$/i.test(name) && !/seat|license/i.test(name))
-    .map(([label, amountUsd]) => ({ label, amountUsd }))
-    .filter((row) => row.amountUsd > 0.004)
-    .sort((a, b) => b.amountUsd - a.amountUsd);
-
-  const value = {
+  return {
     totalEffectiveUsd: totalEffective,
-    seatsUsd,
+    seatsUsd, // plan fee + seats + monthly add-ons
     infrastructureUsd,
     byService,
     lineItems,
   };
+}
+
+async function fetchChargesWindow(teamId, fromIso, toIso) {
+  const q = new URLSearchParams({ teamId, from: fromIso, to: toIso });
+  const text = await apiGetText(`/v1/billing/charges?${q}`);
+  return accumulateCharges(text, {});
+}
+
+/**
+ * Service totals for the settled part of the cycle, [from, closedTo).
+ * A busy team produces several MB of charge rows per cycle, so settled days
+ * are kept in storage and only newly settled days are fetched. The whole
+ * range is rebuilt every few hours (and on manual refresh) to pick up any
+ * late adjustments.
+ */
+async function loadClosedCharges(teamId, fromIso, fromMs, closedToMs) {
+  let cache = null;
+  try {
+    cache = (await chrome.storage.local.get(CHARGES_CACHE_KEY))[CHARGES_CACHE_KEY] || null;
+  } catch {
+    cache = null;
+  }
+  const usable =
+    cache &&
+    cache.v === CHARGES_CACHE_VERSION &&
+    cache.teamId === teamId &&
+    cache.fromIso === fromIso &&
+    cache.closedToMs > fromMs &&
+    cache.closedToMs <= closedToMs &&
+    Date.now() - (cache.builtAt || 0) < CHARGES_FULL_REBUILD_MS;
+
+  let services;
+  let builtAt;
+  if (usable) {
+    services = cache.services || {};
+    builtAt = cache.builtAt;
+    if (cache.closedToMs === closedToMs) return services;
+    const delta = await fetchChargesWindow(
+      teamId,
+      new Date(cache.closedToMs).toISOString(),
+      new Date(closedToMs).toISOString()
+    );
+    services = mergeCharges(services, delta);
+  } else {
+    services = await fetchChargesWindow(teamId, fromIso, new Date(closedToMs).toISOString());
+    builtAt = Date.now();
+  }
+
+  try {
+    await chrome.storage.local.set({
+      [CHARGES_CACHE_KEY]: {
+        v: CHARGES_CACHE_VERSION,
+        teamId,
+        fromIso,
+        closedToMs,
+        builtAt,
+        services,
+      },
+    });
+  } catch {
+    // best-effort
+  }
+  return services;
+}
+
+async function fetchSpendFromCharges(teamId, fromIso, toIso) {
+  // 15-minute cache of the finished summary.
+  const throttle = await getThrottle();
+  if (
+    throttle.spendCache &&
+    throttle.spendCache.teamId === teamId &&
+    throttle.spendCache.fromIso === fromIso &&
+    Date.now() - (throttle.spendCache.at || 0) < 15 * 60_000
+  ) {
+    return throttle.spendCache.value;
+  }
+
+  const fromMs = new Date(fromIso).getTime();
+  const toMs = new Date(toIso).getTime();
+  // Days that ended more than 24h ago are treated as settled.
+  let closedToMs = Math.floor((Date.now() - DAY_MS) / DAY_MS) * DAY_MS;
+  if (Number.isFinite(toMs)) closedToMs = Math.min(closedToMs, toMs);
+
+  let closed = {};
+  let openFromIso = fromIso;
+  if (Number.isFinite(fromMs) && closedToMs > fromMs) {
+    closed = await loadClosedCharges(teamId, fromIso, fromMs, closedToMs);
+    openFromIso = new Date(closedToMs).toISOString();
+  }
+
+  let open = {};
+  if (!Number.isFinite(toMs) || new Date(openFromIso).getTime() < toMs) {
+    open = await fetchChargesWindow(teamId, openFromIso, toIso);
+  }
+
+  const value = summarizeCharges(mergeCharges(closed, open));
   await patchThrottle({
     spendCache: { teamId, fromIso, at: Date.now(), value },
   });
   return value;
 }
 
+/**
+ * Vercel has shipped two budget shapes:
+ *   legacy  { isActive: true, fixedBudget: 200 }
+ *   current { status: "active", amount: "200", scope: "team", thresholds: [...] }
+ * Normalize both to { isActive, fixedBudget, scope }.
+ */
+function normalizeBudget(b) {
+  const rawAmount = b.fixedBudget ?? b.amount;
+  const amount = typeof rawAmount === "string" ? Number(rawAmount) : rawAmount;
+  const isActive =
+    typeof b.isActive === "boolean"
+      ? b.isActive
+      : typeof b.status === "string"
+        ? b.status.toLowerCase() === "active"
+        : false;
+  return {
+    isActive,
+    fixedBudget: numOrNull(amount),
+    scope: typeof b.scope === "string" ? b.scope.toLowerCase() : null,
+  };
+}
+
 async function fetchBudgets(teamId) {
   try {
     const data = await apiGet(`/v1/budgets?teamId=${encodeURIComponent(teamId)}`);
-    const list = data?.data || [];
-    const active = list.find((b) => b && b.isActive) || list[0] || null;
-    return active;
+    const list = (data?.data || []).filter(Boolean).map(normalizeBudget);
+    // Prefer the active team-wide budget; project-scoped budgets are not the
+    // team's on-demand cap.
+    const teamWide = list.filter((b) => !b.scope || b.scope === "team");
+    const pool = teamWide.length ? teamWide : list;
+    return pool.find((b) => b.isActive) || pool[0] || null;
   } catch (e) {
     dbg("budgets failed:", e);
     return null;
@@ -531,7 +756,7 @@ function buildMeters(invoiceItems, requestTotals) {
   const edgeLimit = numOrNull(invoiceItems?.edgeRequest?.threshold);
   const fdtLimitGb = numOrNull(invoiceItems?.fastDataTransfer?.threshold);
 
-  // Edge requests — prefer dedicated counters; fall back to hit+miss.
+  // CDN requests (formerly "Edge Requests") — prefer dedicated counters; fall back to hit+miss.
   const edgeUsed =
     pickField(
       requestTotals,
@@ -549,7 +774,7 @@ function buildMeters(invoiceItems, requestTotals) {
   if (edgeLimit != null && edgeLimit > 0 && edgeUsed != null) {
     meters.push({
       key: "edgeRequest",
-      label: "Edge Requests",
+      label: "CDN Requests",
       used: edgeUsed,
       limit: edgeLimit,
       unit: "requests",
@@ -730,7 +955,7 @@ async function doFetchUsage(force = false) {
       errorCode: null,
     });
   } catch (err) {
-    console.error("[Vercel Usage Badge] fetch error:", err);
+    console.error("[Vercel Usage Tracker & Badge] fetch error:", err);
     let errorCode = "unknown";
     let lastError = err.message || "Failed to fetch usage";
     if (err instanceof ApiError) {
@@ -813,8 +1038,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg?.type === "FORCE_REFRESH" || msg?.type === "VERCEL_USAGE_UPDATE") {
-    // Bust spend cache on manual refresh.
-    patchThrottle({ spendCache: null }).finally(() => {
+    // Bust spend caches on manual refresh (forces a full charges rebuild).
+    Promise.allSettled([
+      patchThrottle({ spendCache: null }),
+      chrome.storage.local.remove(CHARGES_CACHE_KEY),
+    ]).finally(() => {
       fetchUsageAndUpdate(true)
         .then(() => sendResponse({ ok: true }))
         .catch(() => sendResponse({ ok: false }));

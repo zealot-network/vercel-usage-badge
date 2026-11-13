@@ -1,10 +1,10 @@
-# Vercel Usage Badge
+# Vercel Usage Tracker & Badge
 
 A Chrome extension that puts your Vercel usage in your browser toolbar.
 
 > **Unofficial.** This is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Vercel Inc. "Vercel" is a trademark of Vercel Inc., used here only to describe what the extension does.
 
-The badge shows the worst of your meaningful usage signals at a glance — included credit burn, on-demand charges/budget, and included usage meters. Click it for a Vercel-styled breakdown that mirrors the dashboard usage card.
+The toolbar badge tracks **included credit** first (green → amber → red). Once you burn past that into on-demand, it switches to your **on-demand budget %** and shifts **blue → purple** as the budget fills — so you never see a scary 200%+ just for exceeding the $20 Pro credit while still inside your spend cap. Click the badge for a Vercel-styled breakdown.
 
 ## Features
 
@@ -12,13 +12,15 @@ The badge shows the worst of your meaningful usage signals at a glance — inclu
 - Dashboard-style split bar: Included Credit vs On-Demand Charges
 - On-demand budget vs charges when Spend Management is configured
 - Over-budget state is flagged
+- Badge: traffic-light while on included credit; blue→purple on on-demand budget %
 
 **This cycle**
-- Line-item spend list (Build CPU Minutes, Observability, Fluid, …)
+- Line-item spend list (Vercel Agent, Fluid, Builds, Sandbox, Queues, Observability, …)
+- Plan fee, seats and monthly add-ons are kept out of included-credit math
 
-**Included usage**
-- Edge Requests and Fast Data Transfer vs plan allotments (when exposed)
-- Badge color escalates on the worst signal
+**CDN usage**
+- Hobby: CDN Requests and Fast Data Transfer vs included limits
+- Pro: the same meters shown as Flat Rate CDN capacity. Going over is not billed, so it never turns the badge red (when exposed)
 
 **AI Gateway**
 - Prepaid AI Gateway credit balance (when available)
@@ -52,7 +54,7 @@ Primary endpoints (cookie session on `vercel.com`):
 - `GET /api/teams` — plan, billing period, included thresholds
 - `GET /api/v1/budgets` — on-demand spend management
 - `GET /api/v2/usage?type=requests` — included meter totals
-- `GET /api/v1/billing/charges` — FOCUS JSONL spend totals (cached 15 minutes)
+- `GET /api/v1/billing/charges` — FOCUS JSONL spend totals (summary cached 15 minutes; settled days cached locally and only new days fetched)
 
 Auth uses your existing `_v-session` cookie on `vercel.com`. No token pasting required — just stay signed in to the dashboard in Chrome.
 

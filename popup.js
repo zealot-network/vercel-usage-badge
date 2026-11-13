@@ -84,6 +84,11 @@ function barColor(pct) {
   return "var(--green)";
 }
 
+// Capacity is not a spend limit, so it never goes red: blue, then amber past 100%.
+function capacityColor(pct) {
+  return pct >= 100 ? "var(--amber)" : "var(--blue)";
+}
+
 function displayPct(pct) {
   if (pct == null || !Number.isFinite(pct)) return null;
   if (pct <= 0) return 0;
@@ -162,8 +167,9 @@ function formatCompact(n, unit) {
     return `${(n * 1024).toFixed(0)} MB`;
   }
   if (unit === "requests") {
-    if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 1 : 2)}M`;
-    if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e5 ? 0 : 2)}K`;
+    const trim = (v) => v.replace(/\.?0+$/, "");
+    if (n >= 1e6) return `${trim((n / 1e6).toFixed(n >= 1e7 ? 1 : 2))}M`;
+    if (n >= 1e3) return `${n >= 1e5 ? (n / 1e3).toFixed(0) : trim((n / 1e3).toFixed(2))}K`;
     return `${Math.round(n)}`;
   }
   return String(Math.round(n * 100) / 100);
@@ -321,7 +327,11 @@ function render(state) {
   const metersSlot = $("meters-slot");
   metersSlot.innerHTML = "";
   const meters = state.meters || [];
+  // Hobby meters are hard limits. On paid plans they are Flat Rate CDN
+  // capacity: exceeding it is not billed, it moves the tier up next cycle.
+  const metersAreLimits = state.subscriptionTier === "hobby";
   if (meters.length > 0 && !showPrompt) {
+    metersHeading.textContent = metersAreLimits ? "Included usage" : "Flat Rate CDN capacity";
     metersHeading.style.display = "";
     for (const m of meters) {
       const pct = m.utilization;
@@ -346,8 +356,16 @@ function render(state) {
       if (pct != null) track.setAttribute("aria-valuenow", String(Math.round(Math.min(100, pct))));
       const fill = wrap.querySelector(".bar-fill");
       fill.style.width = `${pct != null ? Math.min(100, pct) : 0}%`;
-      fill.style.backgroundColor = pct != null ? barColor(pct) : "var(--track)";
+      fill.style.backgroundColor =
+        pct == null ? "var(--track)" : metersAreLimits ? barColor(pct) : capacityColor(pct);
       metersSlot.appendChild(wrap);
+    }
+    if (!metersAreLimits && meters.some((m) => m.utilization != null && m.utilization >= 100)) {
+      const note = document.createElement("div");
+      note.className = "empty";
+      note.textContent =
+        "Over capacity this cycle. No overage is billed, but Vercel may move you to a higher Flat Rate CDN tier next cycle.";
+      metersSlot.appendChild(note);
     }
   } else {
     metersHeading.style.display = "none";
